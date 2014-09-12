@@ -4,8 +4,55 @@
 require 'rubygems'
 require './graphviz'
 require 'mustache'
-require 'json'
+require 'yaml'
 require 'fileutils'
+
+
+########## LOAD DATA #############
+
+def load_data(file)
+  fdata = YAML.load(file)
+  fdata = fdata["Resources"].find_all {|item|
+    item[1]["Type"] =~ /OS::Heat::Structured/
+  }
+
+  g = Graph.new
+  g[:ranksep] = 2.0
+  fdata.each {|item|
+    key = item[0]
+    node = g.get_or_make(key)
+
+    type = item[1]["Type"]
+    node[:shape] = (type =~ /deployment/i and 'box' or nil)
+
+    deps = item[1]["DependsOn"] || []
+    deps.each() {|dep|
+      dst = g.get_or_make(dep)
+      g.add GEdge[node, dst]
+    }
+
+    properties = item[1]["Properties"]
+    if properties
+      config = properties["config"]
+      if config
+        ref = config["Ref"]
+        if ref
+          src = g.get_or_make(ref)
+          g.add GEdge[src, node]
+        end
+      end
+    end
+  }
+
+  g.nodes.each {|node|
+    # Hack - remove anything with 1 in it because it's a scaled thing
+    if node.key =~ /1/
+      g.cut node
+    end
+  }
+
+  g
+end
 
 
 ########## DECORATE ###########
@@ -26,13 +73,10 @@ def rank_node(node)
   end
 end
 
-def mk_graph(data, tag=nil)
-  graph = Graph.from_hash(data)
-  graph[:ranksep] = 2.0
-
+def decorate(graph, tag=nil)
+  nhues = palette(6, 30, 95)
   graph.nodes.each {|node|
-    label = node.label
-    node[:shape] = (node.key =~ /role/ and 'box' or nil)
+    label = node.key
     node[:URL] = "focus-#{node.node}.html"
 
     if label =~ /(.*)-core/
@@ -45,100 +89,39 @@ def mk_graph(data, tag=nil)
       node[:fillcolor] = color if label =~ pat
       node[:style] = :filled if label =~ pat
     }
-    setfill[/nova/i, hsv(58, 13.7, 100)]
-    setfill[/nova::/i, hsv(36, 13.7, 100)]
-    setfill[/-core/i, hsv(0, 0, 95)]
+    ix = 1
+    setfill[/controller/i, nhues[ix]]; ix += 1
+    setfill[/compute/i, nhues[ix]]; ix += 1
+    setfill[/allnodes/i, nhues[ix]]; ix += 1
+    setfill[/swift/i, nhues[ix]]; ix += 1
+    setfill[/block/i, nhues[ix]]; ix += 1
   }
 
+  # ehues = palette(5, 80.9, 69.8)
   graph.edges.each {|edge|
-    swords = edge.src.split(/-|::/).map {|w| w.downcase }
-    dwords = edge.dst.split(/-|::/).map {|w| w.downcase }
-    core_rel = ((swords + ["core"]) == dwords)
-
-    # setdst[/Nova-in-a-box/i, :color, :slateblue]
-    hues = palette(5, 80.9, 69.8)
-    edge[:color] = hues[1] if swords.include? "scheduler"
-    edge[:color] = hues[2] if swords.include? "api"
-    edge[:color] = hues[4] if swords.include? "management"
-    edge[:color] = hues[3] if dwords.include? "config"
-    edge[:color] = hues[0] if dwords.include? "common"
-    edge[:penwidth] = 2.0 if edge[:color]
-    if core_rel
-      edge[:penwidth] = 4.0
-      edge[:color] = :black
+    # edge[:color] = hues[1] if swords.include? "scheduler"
+    if edge.snode[:shape] == 'box' and edge.dnode[:shape] == 'box'
+      edge[:penwidth] = 2.0
     end
   }
-  
+
   graph
 end
 
 
-########## LOAD DATA #############
-
-def load_data(dir)
-  Hash[Dir[File.join(dir, '*.json')].map {|filename|
-    File.open(filename) {|file|
-      fdata = JSON::parse(file.read, :create_additions => false)
-      ["role[#{fdata['name']}]",
-       fdata['run_list']]
-    }
-  }]
-end
-
-merged = {}
-by_dir = {"merged" => merged}
-ARGV.each {|dir|
-  if !File.directory? dir
-    raise "Not a directory: #{dir}"
-  end
-  data = load_data(dir)
-  # extract BLAH from /path/to/BLAH/roles/*.json
-  tag = File.absolute_path(dir).split("/")[-2]
-  by_dir[tag] = data
-  merged.merge! data
-}
-# puts JSON::dump(merged); exit
-
-
 ########## RENDER #############
 
-class GRender
-  def initialize(tag)
-    @tag = tag
-    @graphs = {}
-    @nav = []
-    @nav2 = []
-  end
+def write(graph)
+  Mustache.template_file = 'diagram.mustache'
+  view = Mustache.new
+  view[:now] = Time.now.strftime("%Y.%m.%d %H:%M:%S")
 
-  def add(g, name, notes = nil)
-    @graphs[name] = {:graph => g,
-                     :notes => notes}
-  end
-  def add_to_nav(g, name, label, notes = nil)
-    add(g, name, notes)
-    @nav << {:url => "#{name}.html", :label => label}
-  end
-  def add_tag(tag)
-    @nav2 << {:url => "../#{tag}/simple.html", :label => tag.capitalize}
-  end
+  view[:title] = "Heat dependencies"
+  view[:dotdata] = g2dot(graph)
 
-  def write
-    Mustache.template_file = 'chefroles.mustache'
-    view = Mustache.new
-    view[:now] = Time.now.strftime("%Y.%m.%d %H:%M:%S")
-    view[:nav] = @nav
-    view[:nav2] = @nav2
-
-    @graphs.each_pair {|name, obj|
-      view[:title] = "Chef roles - #{@tag} - #{name}"
-      view[:dotdata] = g2dot(obj[:graph])
-      view[:notes] = (obj[:notes] and "<p>#{obj[:notes]}</p>" or "")
-
-      path = File.join(TOPDIR, @tag, "#{name}.html")
-      File.open(path, 'w') do |f|
-        f.puts view.render
-      end
-    }
+  path = "heat-deps.html"
+  File.open(path, 'w') do |f|
+    f.puts view.render
   end
 end
 
@@ -151,40 +134,15 @@ def en_join(a)
   end
 end
 
-def mk_graphset(data, tag, other_tags, exclude)
-  tagdir = File.join(TOPDIR, tag)
-  File.directory?(tagdir) or Dir.mkdir(tagdir)
-  subvizjs = File.join(tagdir, VIZJS)
-  File.exists?(subvizjs) or FileUtils.cp(VIZJS, subvizjs)
 
-  grender = GRender.new(tag)
-  other_tags.map {|otag| grender.add_tag(otag) }
-
-  g0 = mk_graph(data)
-  # g0.lowercut(*g0.match(*[/Nova-in-a-box/, /Nova-trivial/]))
-
-  g1 = g0.dup
-  g1.lowercut(*g1.match(*exclude.map {|i| /#{i}/i }))
-
-  grender.add_to_nav(g1, "simple", "Simplified", "Excludes #{en_join(exclude)}.")
-  grender.add_to_nav(g0, "main", "Full #{tag}")
-
-  g0.nodes.each { |fnode|
-    gf = g0.focus(fnode)
-    grender.add(gf, "focus-#{fnode.node}")
-  }
-
-  grender
+filename = ARGV[0]
+if !File.file? filename
+  raise "Not a file: #{filename}"
 end
-
-TOPDIR = "graphs"
-VIZJS = "viz.js"
-File.directory?(TOPDIR) or Dir.mkdir(TOPDIR)
-
-exclude = ["Monitoring", "Basenode", "SecurityLevel-Base",
-           "Devex", "ufw", "perf-target"]
-
-by_dir.each_pair {|tag, data|
-  other_tags = by_dir.keys - [tag]
-  mk_graphset(data, tag, other_tags, exclude).write
+graph = nil
+File.open(filename) {|file|
+  graph = load_data(file)
 }
+
+graph = decorate(graph)
+write(graph)

@@ -17,9 +17,8 @@ class GNode
 
   def initialize(key, attrs = {})
     @key = key
-    key =~ /\[(.*)\]/
     @attrs = attrs
-    self.label ||= $1
+    self[:label] = key
     @node = "n#@@node_counter"
     @@node_counter += 1
 
@@ -142,6 +141,14 @@ class Graph
     end
     nil
   end
+  def get_or_make(k)
+    n = get(k)
+    if n == nil
+      n = GNode[k]
+      add n
+    end
+    n
+  end
 
   def match(*pats)
     Set.new(@nodes).keep_if {|n|
@@ -164,6 +171,7 @@ class Graph
     items.each {|i|
       case i
       when GNode
+        # puts "N+++: #{i.inspect}"
         @nodes.add i
       when GEdge
         # puts "E+++: #{i.inspect}"
