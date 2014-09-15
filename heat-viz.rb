@@ -6,36 +6,83 @@ require './graphviz'
 require 'mustache'
 require 'yaml'
 require 'fileutils'
+require 'optparse'
+require 'ostruct'
+require 'pp'
+
+
+########## TEMPLATE FORMAT #############
+
+LANG_CFN = OpenStruct.new
+LANG_CFN.version = '2012-12-12'
+LANG_CFN.get_resource = 'Ref'
+LANG_CFN.get_param = 'Ref'
+LANG_CFN.description = 'Description'
+LANG_CFN.parameters = 'Parameters'
+LANG_CFN.outputs = 'Outputs'
+LANG_CFN.resources = 'Resources'
+LANG_CFN.type = 'Type'
+LANG_CFN.properties = 'Properties'
+LANG_CFN.metadata = 'Metadata'
+LANG_CFN.depends_on = 'DependsOn'
+LANG_CFN.get_attr = 'Fn::GetAtt'
+
+LANG_HOT = OpenStruct.new
+LANG_HOT.version = '2013-05-23'
+LANG_HOT.get_resource = 'get_resource'
+LANG_HOT.get_param = 'get_param'
+LANG_HOT.description = 'description'
+LANG_HOT.parameters = 'parameters'
+LANG_HOT.outputs = 'outputs'
+LANG_HOT.resources = 'resources'
+LANG_HOT.type = 'type'
+LANG_HOT.properties = 'properties'
+LANG_HOT.metadata = 'metadata'
+LANG_HOT.depends_on = 'depends_on'
+LANG_HOT.get_attr = 'get_attr'
+
+def get_lang(data)
+  if data["HeatTemplateFormatVersion"] == LANG_CFN.version
+    LANG_CFN
+  elsif data["heat_template_version"] == LANG_HOT.version
+    LANG_HOT
+  else
+    abort("Unrecognised HeatTemplateFormatVersion: #{version}")
+  end
+end
 
 
 ########## LOAD DATA #############
 
 def load_data(file)
   fdata = YAML.load(file)
-  fdata = fdata["Resources"].find_all {|item|
-    item[1]["Type"] =~ /OS::Heat::Structured/
+  lang = get_lang(fdata)
+
+  fdata = fdata[lang.resources].find_all {|item|
+    item[1][lang.type] =~ /OS::Heat::Structured/
   }
 
   g = Graph.new
   g[:ranksep] = 2.0
+  g[:tooltip] = "Heat dependencies"
   fdata.each {|item|
     key = item[0]
     node = g.get_or_make(key)
 
-    type = item[1]["Type"]
+    type = item[1][lang.type]
     node[:shape] = (type =~ /deployment/i and 'box' or nil)
 
-    deps = item[1]["DependsOn"] || []
+    deps = item[1][lang.depends_on] || []
     deps.each() {|dep|
       dst = g.get_or_make(dep)
       g.add GEdge[node, dst]
     }
 
-    properties = item[1]["Properties"]
+    properties = item[1][lang.properties]
     if properties
       config = properties["config"]
       if config
-        ref = config["Ref"]
+        ref = config[lang.get_resource]
         if ref
           src = g.get_or_make(ref)
           g.add GEdge[src, node]
@@ -92,14 +139,13 @@ def decorate(graph, tag=nil)
     ix = 1
     setfill[/controller/i, nhues[ix]]; ix += 1
     setfill[/compute/i, nhues[ix]]; ix += 1
-    setfill[/allnodes/i, nhues[ix]]; ix += 1
+    # setfill[/allnodes/i, nhues[ix]]; ix += 1
     setfill[/swift/i, nhues[ix]]; ix += 1
     setfill[/block/i, nhues[ix]]; ix += 1
   }
 
   # ehues = palette(5, 80.9, 69.8)
   graph.edges.each {|edge|
-    # edge[:color] = hues[1] if swords.include? "scheduler"
     if edge.snode[:shape] == 'box' and edge.dnode[:shape] == 'box'
       edge[:penwidth] = 2.0
     end
@@ -111,7 +157,7 @@ end
 
 ########## RENDER #############
 
-def write(graph)
+def write(graph, filename)
   Mustache.template_file = 'diagram.mustache'
   view = Mustache.new
   view[:now] = Time.now.strftime("%Y.%m.%d %H:%M:%S")
@@ -119,7 +165,7 @@ def write(graph)
   view[:title] = "Heat dependencies"
   view[:dotdata] = g2dot(graph)
 
-  path = "heat-deps.html"
+  path = filename
   File.open(path, 'w') do |f|
     f.puts view.render
   end
@@ -135,14 +181,34 @@ def en_join(a)
 end
 
 
-filename = ARGV[0]
-if !File.file? filename
-  raise "Not a file: #{filename}"
+########## OPTIONS #############
+
+options = OpenStruct.new
+options.format = :hot
+options.output_filename = "heat-deps.html"
+OptionParser.new do |o|
+  o.banner = "Usage: heat-viz.rb [options] heat.yaml"
+  o.on("-o", "--output [FILE]", "Where to write output") do |fname|
+    options.output_filename = fname
+  end
+  o.on_tail("-h", "--help", "Show this message") do
+    puts o
+    exit
+  end
+end.parse!
+if ARGV.length != 1
+  abort("Must provide a Heat template")
 end
+options.input_filename = ARGV.shift
+
+if !File.file? options.input_filename
+  raise "Not a file: #{options.input_filename}"
+end
+
 graph = nil
-File.open(filename) {|file|
+File.open(options.input_filename) {|file|
   graph = load_data(file)
 }
 
 graph = decorate(graph)
-write(graph)
+write(graph, options.output_filename)

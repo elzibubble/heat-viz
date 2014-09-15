@@ -1,2 +1,5 @@
-heat-deps.html
+heat-deps-ce.html
+heat-deps-up.html
 overcloud-ce.yaml
+overcloud-up.yaml
+refresh.sh
