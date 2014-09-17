@@ -75,7 +75,12 @@ def load_data(file)
     node = g.get_or_make(key)
 
     type = item[1][lang.type]
-    node[:shape] = (type =~ /deployment/i and 'box' or nil)
+    node[:shape] = case type
+                   when /deployment/i then 'box'
+                   when /server/i then 'box3d'
+                   when /config/i then 'oval'
+                   else abort 'Unexpected type'
+                   end
 
     deps = item[1][lang.depends_on] || []
     deps.each() {|dep|
@@ -108,7 +113,7 @@ def load_data(file)
 
   g.nodes.each {|node|
     # Hack - remove anything with 1 in it because it's a scaled thing
-    if node.key =~ /1/
+    if node.key =~ /[1-9]/
       g.cut node
     end
   }
