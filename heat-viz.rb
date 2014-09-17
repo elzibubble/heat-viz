@@ -59,10 +59,15 @@ def load_data(file)
   lang = get_lang(fdata)
 
   fdata = fdata[lang.resources].find_all {|item|
-    item[1][lang.type] =~ /OS::Heat::Structured/
+    case item[1][lang.type]
+    when /OS::Heat::Structured/ then true
+    when /OS::Nova::Server/ then true
+    else false
+    end
   }
 
   g = Graph.new
+  es = []
   g[:ranksep] = 2.0
   g[:tooltip] = "Heat dependencies"
   fdata.each {|item|
@@ -74,8 +79,7 @@ def load_data(file)
 
     deps = item[1][lang.depends_on] || []
     deps.each() {|dep|
-      dst = g.get_or_make(dep)
-      g.add GEdge[node, dst]
+      es.push [key, dep]
     }
 
     properties = item[1][lang.properties]
@@ -84,11 +88,22 @@ def load_data(file)
       if config
         ref = config[lang.get_resource]
         if ref
-          src = g.get_or_make(ref)
-          g.add GEdge[src, node]
+          es.push [ref, key]
         end
       end
     end
+  }
+
+  es.each {|e|
+    src, dst = e
+    src_node = g.get(src)
+    dst_node = g.get(dst)
+    if src_node == nil
+      abort "Edge from unknown node: #{src}"
+    elsif dst_node == nil
+      abort "Edge to unknown node: #{dst}"
+    end
+    g.add GEdge[src_node, dst_node]
   }
 
   g.nodes.each {|node|
