@@ -73,28 +73,34 @@ def load_data(file)
   fdata.each {|item|
     key = item[0]
     node = g.get_or_make(key)
+    properties = item[1][lang.properties]
+    config = properties["config"]
 
     type = item[1][lang.type]
-    node[:shape] = case type
-                   when /deployment/i then 'box'
-                   when /server/i then 'box3d'
-                   when /config/i then 'oval'
-                   else abort 'Unexpected type'
-                   end
+    case type
+    when /deployment/i
+      node[:shape] = 'box'
+      if properties["signal_transport"] != "NO_SIGNAL"
+        node[:peripheries] = 2
+      end
+    when /config/i
+      node[:shape] = 'oval'
+      if config["completion-signal"] != nil
+        node[:peripheries] = 2
+      end
+    when /server/i then 'box3d'
+    else abort 'Unexpected type'
+    end
 
     deps = item[1][lang.depends_on] || []
     deps.each() {|dep|
       es.push [key, dep]
     }
 
-    properties = item[1][lang.properties]
-    if properties
-      config = properties["config"]
-      if config
-        ref = config[lang.get_resource]
-        if ref
-          es.push [ref, key]
-        end
+    if config
+      ref = config[lang.get_resource]
+      if ref
+        es.push [ref, key]
       end
     end
   }
