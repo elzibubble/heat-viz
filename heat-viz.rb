@@ -14,7 +14,7 @@ require 'pp'
 ########## TEMPLATE FORMAT #############
 
 LANG_CFN = OpenStruct.new
-LANG_CFN.version = '2012-12-12'
+LANG_CFN.version = /2012-12-12|ocata|pike/
 LANG_CFN.get_resource = 'Ref'
 LANG_CFN.get_param = 'Ref'
 LANG_CFN.description = 'Description'
@@ -28,7 +28,7 @@ LANG_CFN.depends_on = 'DependsOn'
 LANG_CFN.get_attr = 'Fn::GetAtt'
 
 LANG_HOT = OpenStruct.new
-LANG_HOT.version = '2013-05-23'
+LANG_HOT.version = /2013-05-23|ocata|pike/
 LANG_HOT.get_resource = 'get_resource'
 LANG_HOT.get_param = 'get_param'
 LANG_HOT.description = 'description'
@@ -42,9 +42,9 @@ LANG_HOT.depends_on = 'depends_on'
 LANG_HOT.get_attr = 'get_attr'
 
 def get_lang(data)
-  if data["HeatTemplateFormatVersion"] == LANG_CFN.version
+  if not LANG_CFN.version.match(data["HeatTemplateFormatVersion"]).nil?
     LANG_CFN
-  elsif data["heat_template_version"] == LANG_HOT.version
+  elsif not LANG_HOT.version.match(data["heat_template_version"]).nil?
     LANG_HOT
   else
     abort("Unrecognised HeatTemplateFormatVersion: #{version}")
@@ -54,7 +54,7 @@ end
 
 ########## LOAD DATA #############
 
-def load_data(file)
+def load_data(file, filter)
   fdata = YAML.load(file)
   lang = get_lang(fdata)
 
@@ -109,20 +109,29 @@ def load_data(file)
     src, dst = e
     src_node = g.get(src)
     dst_node = g.get(dst)
+    if filter.match(src).nil? or filter.match(dst).nil?
+      puts "Filter out #{src}/#{dst} as non matching"
+      next
+    end
     if src_node == nil
-      abort "Edge from unknown node: #{src}"
+      puts "Edge from unknown node: #{src}"
+      next
     elsif dst_node == nil
-      abort "Edge to unknown node: #{dst}"
+      puts "Edge to unknown node: #{dst}"
+      next
     end
     g.add GEdge[src_node, dst_node]
   }
 
-  g.nodes.each {|node|
-    # Hack - remove anything with 1 in it because it's a scaled thing
-    if node.key =~ /[1-9]/
-      g.cut node
-    end
-  }
+  #g.nodes.each {|node|
+  #  # Hack - remove anything with 1 in it because it's a scaled thing
+  #  if node.key =~ /[1-9]/
+  #    g.cut node
+  #  end
+
+  #  # TODO Drop unconnected nodes from graph
+  #  not neighbors(node).empty? or g.cut node
+  #}
 
   g
 end
@@ -146,8 +155,8 @@ def rank_node(node)
   end
 end
 
-def decorate(graph, tag=nil)
-  nhues = palette(6, 30, 95)
+def decorate(graph, tag=nil, decors)
+  nhues = palette(decors.size, 30, 95)
   graph.nodes.each {|node|
     label = node.key
     node[:URL] = "focus-#{node.node}.html"
@@ -163,11 +172,9 @@ def decorate(graph, tag=nil)
       node[:style] = :filled if label =~ pat
     }
     ix = 1
-    setfill[/controller/i, nhues[ix]]; ix += 1
-    setfill[/compute/i, nhues[ix]]; ix += 1
-    # setfill[/allnodes/i, nhues[ix]]; ix += 1
-    setfill[/swift/i, nhues[ix]]; ix += 1
-    setfill[/block/i, nhues[ix]]; ix += 1
+    decors.each do |decor|
+      setfill[/#{decor}/i, nhues[ix]]; ix += 1
+    end
   }
 
   # ehues = palette(5, 80.9, 69.8)
@@ -213,9 +220,17 @@ options = OpenStruct.new
 options.format = :hot
 options.output_filename = "heat-deps.html"
 OptionParser.new do |o|
+  options.filter = /.*/
+  options.decors = ['compute', 'controller', 'storage']
   o.banner = "Usage: heat-viz.rb [options] heat.yaml"
   o.on("-o", "--output [FILE]", "Where to write output") do |fname|
     options.output_filename = fname
+  end
+  o.on("-f", "--filter [regex]", "Filter graph nodes (default .*)") do |filter|
+    options.filter = /#{filter}/
+  end
+  o.on("-d", "--decors [FOO,BAR]", "Tags (steps/roles) for palete") do |decors|
+    options.decors = decors.split(',')
   end
   o.on_tail("-h", "--help", "Show this message") do
     puts o
@@ -233,8 +248,8 @@ end
 
 graph = nil
 File.open(options.input_filename) {|file|
-  graph = load_data(file)
+  graph = load_data(file, options.filter)
 }
 
-graph = decorate(graph)
+graph = decorate(graph, nil, options.decors)
 write(graph, options.output_filename)
